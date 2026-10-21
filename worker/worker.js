@@ -22,7 +22,7 @@ export default {
     if (url.pathname === '/' || url.pathname === '/favicon.ico' || url.pathname.length < 20) {
       return new Response('No encontrado', { status: 404 });
     }
-    const origen = `customer-${env.CUSTOMER_CODE}.cloudflarestream.com`;
+    const origen = `customer-${env.CUSTOMER_CODE || 'il0jx6d1ltq7d0ad'}.cloudflarestream.com`;
     const arriba = new URL(url.pathname + url.search, `https://${origen}`);
 
     const h = new Headers();
