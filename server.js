@@ -240,6 +240,10 @@ function vistaClientes(res, aviso = '') {
           <label>Nombre</label><input name="nombre" value="${esc(c.nombre)}" required>
           <label>Precio por entrada (vacío = general)</label><input name="precio_entrada" type="number" step="0.01" min="0" value="${c.precio_entrada != null ? esc(c.precio_entrada) : ''}">
           <label>Dominios donde puede ir el reproductor</label><input name="dominios" value="${esc(c.dominios || '')}" placeholder="ticketera.com www.ticketera.com">
+          <label>Página de la ticketera (botón "Volver")</label><input name="sitio" value="${esc(c.sitio || '')}" placeholder="https://www.ticketera.com">
+          <label>Logo (PNG, JPG o SVG, hasta 200 KB)</label>${c.logo ? `<img src="/logo/${c.id}" alt="" style="max-height:40px;display:block;margin:4px 0 8px;background:#fff1;padding:4px;border-radius:6px">` : ''}
+          <input type="file" accept="image/png,image/jpeg,image/webp,image/svg+xml" data-logo><input type="hidden" name="logo" value="">
+          ${c.logo ? '<label class="check"><input type="checkbox" name="quitar_logo" value="1"> Quitar logo</label>' : ''}
           <label class="check"><input type="checkbox" name="activo" value="1" ${c.activo ? 'checked' : ''}> Activo</label>
           <div class="fila" style="margin-top:10px"><button class="btn chico">Guardar</button></div>
         </form>
@@ -349,7 +353,10 @@ async function ver(req, res, t, accion) {
   if (!accion) {
     if (tk.error) return enviar(res, 403, mensaje(tk.error, tk.detalle), 'text/html; charset=utf-8', cabecerasReproductor(null));
     const hlsUrl = fs.existsSync(path.join(__dirname, 'public', 'hls.min.js')) ? '/js/r.js' : config.hlsCdn;
-    return enviar(res, 200, reproductor({ token: t, hlsUrl }), 'text/html; charset=utf-8', cabecerasReproductor(tk.acceso));
+    const info = db.prepare(`SELECT e.titulo, c.id AS cid, c.nombre, c.sitio, (c.logo IS NOT NULL AND c.logo <> '') AS tiene_logo
+        FROM eventos e JOIN clientes c ON c.id = e.cliente_id WHERE e.id = ?`).get(tk.acceso.evento_id) || {};
+    const marca = info.cid ? { nombre: info.nombre, sitio: info.sitio || '', logo: info.tiene_logo ? `/logo/${info.cid}` : '' } : null;
+    return enviar(res, 200, reproductor({ token: t, hlsUrl, titulo: info.titulo, marca }), 'text/html; charset=utf-8', cabecerasReproductor(tk.acceso));
   }
   if (req.method !== 'POST') return json(res, 405, { error: 'Método no permitido' });
   if (tk.error) return json(res, 200, tk);
@@ -405,6 +412,12 @@ async function rutas(req, res) {
   if (p === '/integracion') return enviar(res, 200, pagina({ titulo: 'Guía de integración', cuerpo: guia(baseUrl(req)), nav: esAdmin(req) ? 'panel' : null, activo: 'doc' }));
 
   if (partes[0] === 'ver' && partes[1]) return ver(req, res, partes[1], partes[2]);
+  if (partes[0] === 'logo' && /^\d+$/.test(partes[1] || '')) {
+    const c = db.prepare('SELECT logo FROM clientes WHERE id = ?').get(Number(partes[1]));
+    const m = c && c.logo && /^data:(image\/(png|jpeg|webp|svg\+xml));base64,(.+)$/.exec(c.logo);
+    if (!m) return enviar(res, 404, 'No encontrado', 'text/plain');
+    return enviar(res, 200, Buffer.from(m[3], 'base64'), m[1], { 'Cache-Control': 'public, max-age=300', 'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'" });
+  }
   if (partes[0] === 'api' && partes[1] === 'v1') return api(req, res, partes.slice(2));
 
   if (partes[0] !== 'panel') return enviar(res, 404, pagina({ titulo: 'No encontrado', cuerpo: '<h1>No encontrado</h1>' }));
@@ -508,10 +521,19 @@ async function rutas(req, res) {
       db.prepare('UPDATE clientes SET api_hash = ?, api_prefijo = ? WHERE id = ?').run(k.hash, k.prefijo, c.id);
       return vistaClientes(res, avisoClave(c.nombre, k.k));
     }
-    const b = await leerCuerpo(req);
+    const b = await leerCuerpo(req, 400 * 1024);
     const precio = b.precio_entrada === '' || b.precio_entrada == null ? null : Number(b.precio_entrada);
-    db.prepare('UPDATE clientes SET nombre = ?, precio_entrada = ?, dominios = ?, activo = ? WHERE id = ?')
-      .run(String(b.nombre || c.nombre).trim().slice(0, 80), Number.isFinite(precio) ? precio : null, limpiarDominios(b.dominios), b.activo ? 1 : 0, c.id);
+    let logo = c.logo;
+    if (b.quitar_logo) logo = null;
+    else if (b.logo) {
+      if (!/^data:image\/(png|jpeg|webp|svg\+xml);base64,[A-Za-z0-9+/=]+$/.test(b.logo) || b.logo.length > 280000) {
+        return vistaClientes(res, '<div class="error">El logo tiene que ser PNG, JPG, WEBP o SVG de hasta 200 KB.</div>');
+      }
+      logo = b.logo;
+    }
+    const sitio = /^https?:\/\/[^\s"'<>]+$/.test(String(b.sitio || '').trim()) ? String(b.sitio).trim().slice(0, 200) : null;
+    db.prepare('UPDATE clientes SET nombre = ?, precio_entrada = ?, dominios = ?, activo = ?, sitio = ?, logo = ? WHERE id = ?')
+      .run(String(b.nombre || c.nombre).trim().slice(0, 80), Number.isFinite(precio) ? precio : null, limpiarDominios(b.dominios), b.activo ? 1 : 0, sitio, logo, c.id);
     return vistaClientes(res, '<div class="okmsg">Cliente actualizado.</div>');
   }
 
