@@ -381,8 +381,16 @@ async function ver(req, res, t, accion) {
   if (!s) return json(res, 400, { error: 'Sesión inválida' });
   const a = tk.acceso;
   const ahoraMs = Date.now();
+  const LIBERA = 60 * 1000; // sin latidos durante 1 minuto, la pantalla se da por cerrada
+  if (accion === 'salir') {
+    if (a.sesion === s) db.prepare('UPDATE accesos SET sesion_latido = 0 WHERE id = ?').run(a.id);
+    return json(res, 200, { ok: true });
+  }
   if (accion === 'iniciar') {
-    // La pantalla más nueva se queda con la entrada; la anterior se corta en su próximo latido.
+    // La primera pantalla se queda con la entrada: otra no puede entrar mientras esa siga abierta.
+    // (El acceso de prueba del panel queda libre para poder abrirlo en varios lados.)
+    const otraActiva = a.sesion && a.sesion !== s && Number(a.sesion_latido) > ahoraMs - LIBERA;
+    if (otraActiva && a.comprador !== 'prueba-panel') return json(res, 200, { ocupado: true });
     db.prepare(`UPDATE accesos SET sesion = ?, sesion_latido = ?, aperturas = aperturas + 1,
         primera_vista = COALESCE(primera_vista, ?), ultima_vista = ? WHERE id = ?`).run(s, ahoraMs, ahora(), ahora(), a.id);
   } else if (accion === 'latido') {
