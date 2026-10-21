@@ -7,7 +7,7 @@ const config = require('./lib/config');
 const { db } = require('./lib/db');
 const cf = require('./lib/cloudflare');
 const { estadoEvento, olvidar, TEXTOS } = require('./lib/estado');
-const { pagina, reproductor, mensaje } = require('./lib/vistas');
+const { pagina, reproductor, mensaje, ingresoCodigo } = require('./lib/vistas');
 const { firmar, verificar, cifrar, descifrar, sha256, esc, ahora, fechaLinda, plata } = require('./lib/util');
 const guia = require('./lib/guia');
 
@@ -173,6 +173,7 @@ function vistaNuevoEvento(res, err = '', datos = {}) {
 async function vistaEvento(req, res, ev, aviso = '') {
   const est = ev.activo ? await estadoEvento(ev) : { estado: 'cerrado' };
   const r = resumen(ev.id);
+  const codigos = db.prepare("SELECT COUNT(*) AS total, COUNT(primera_vista) AS usados FROM accesos WHERE evento_id = ? AND comprador LIKE 'COD-%' AND revocado = 0").get(ev.id);
   const precio = precioDe(ev);
   const accesos = db.prepare('SELECT * FROM accesos WHERE evento_id = ? ORDER BY id DESC LIMIT 200').all(ev.id);
   const key = descifrar(ev.rtmps_key);
@@ -191,10 +192,25 @@ async function vistaEvento(req, res, ev, aviso = '') {
     ${aviso}<div style="height:6px"></div>
     ${est.estado === 'error' ? `<div class="error">No pudimos leer el estado en Cloudflare: ${esc(est.error || '')}</div>` : ''}
     <div class="grid">
-      <div class="kpi"><b>${r.emitidas}</b><span>Entradas emitidas</span></div>
+      <div class="kpi"><b>${r.emitidas}</b><span>Entradas / códigos emitidos</span></div>
       <div class="kpi"><b>${r.vistas}</b><span>Entraron a ver</span></div>
       <div class="kpi"><b>${r.ahora}</b><span>Mirando ahora</span></div>
-      <div class="kpi"><b>${plata(r.emitidas * precio)}</b><span>A facturar (${plata(precio)} por entrada)</span></div>
+      <div class="kpi"><b>${plata(r.vistas * precio)}</b><span>A facturar (${plata(precio)} por entrada usada)</span></div>
+    </div>
+
+    <h2>Link y códigos para la ticketera</h2>
+    <div class="card">
+      <p class="muted" style="margin-top:0">Pasale al cliente este link y la lista de códigos. Cada comprador recibe <b>el link y un código</b>: entra, escribe el código y mira. Un código = una pantalla a la vez.</p>
+      <div class="dato"><code id="d0">${esc(baseUrl(req))}/e/${ev.id}</code><button class="btn sec chico" data-copiar="d0">Copiar link</button></div>
+      <div class="fila" style="margin-top:12px">
+        <form method="post" action="/panel/eventos/${ev.id}/codigos" class="fila">
+          <input type="number" name="cantidad" min="1" max="2000" value="100" style="width:110px">
+          <button class="btn">Generar códigos</button>
+        </form>
+        ${codigos.total ? `<a class="btn sec" href="/panel/eventos/${ev.id}/codigos.csv">Descargar lista (${codigos.total})</a>` : ''}
+        <small>${codigos.total ? `${codigos.total} códigos · ${codigos.usados} usados` : 'Todavía no hay códigos.'}</small>
+      </div>
+      <p class="muted" style="margin-bottom:0">La lista se abre con Excel. Trae cada código y además un <b>link directo</b> que ya incluye el código (para mandar por WhatsApp en un solo mensaje).</p>
     </div>
 
     <h2>Datos para vMix / OBS</h2>
@@ -228,7 +244,7 @@ function vistaClientes(res, aviso = '') {
   const clientes = q.clientes();
   const meses = db.prepare(`SELECT c.nombre, substr(a.creado, 1, 7) AS mes, COUNT(*) AS n
       FROM accesos a JOIN eventos e ON e.id = a.evento_id JOIN clientes c ON c.id = e.cliente_id
-      WHERE a.revocado = 0 AND a.comprador <> 'prueba-panel' GROUP BY c.id, mes ORDER BY mes DESC, c.nombre LIMIT 60`).all();
+      WHERE a.revocado = 0 AND a.primera_vista IS NOT NULL AND a.comprador <> 'prueba-panel' GROUP BY c.id, mes ORDER BY mes DESC, c.nombre LIMIT 60`).all();
   const filas = clientes.map((c) => `<tr>
       <td><b>${esc(c.nombre)}</b>${c.activo ? '' : ' <span class="pill">Inactivo</span>'}</td>
       <td><code>${esc(c.api_prefijo || '')}…</code></td>
@@ -390,6 +406,43 @@ async function ver(req, res, t, accion) {
   return json(res, 200, { estado: est.estado, titulo: ev.titulo, fuentes: necesitaFuentes ? lista : undefined });
 }
 
+/* ------------------------------------------------------------------ ingreso con código */
+
+const LETRAS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+function nuevoCodigo() {
+  const b = crypto.randomBytes(8);
+  let s = '';
+  for (let i = 0; i < 8; i++) s += LETRAS[b[i] % LETRAS.length];
+  return s;
+}
+const normalizarCodigo = (c) => String(c || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 12);
+
+async function ingreso(req, res, eventoId, url) {
+  const info = db.prepare(`SELECT e.id, e.titulo, e.activo, c.id AS cid, c.nombre, c.sitio, (c.logo IS NOT NULL AND c.logo <> '') AS tiene_logo
+      FROM eventos e JOIN clientes c ON c.id = e.cliente_id WHERE e.id = ?`).get(eventoId);
+  if (!info) return enviar(res, 404, mensaje('Evento inexistente', 'Revisá el link que te pasaron.'));
+  const marca = { nombre: info.nombre, sitio: info.sitio || '', logo: info.tiene_logo ? `/logo/${info.cid}` : '' };
+  let codigo = url.searchParams.get('c') || '';
+  if (req.method === 'POST') codigo = (await leerCuerpo(req, 4096)).codigo || '';
+  let error = '';
+  if (codigo) {
+    const ip = String(req.headers['x-forwarded-for'] || req.socket.remoteAddress).split(',')[0].trim();
+    const cod = normalizarCodigo(codigo);
+    if (!puedeIntentar('cod:' + ip)) error = 'Demasiados intentos. Esperá unos minutos.';
+    else {
+      const a = cod.length === 8 && db.prepare('SELECT * FROM accesos WHERE evento_id = ? AND comprador = ?').get(info.id, 'COD-' + cod);
+      if (!a) { intentos.get('cod:' + ip).push(Date.now()); error = 'Ese código no es válido para este evento.'; }
+      else if (a.revocado) error = 'Ese código fue anulado.';
+      else if (!info.activo) error = 'Este evento no está disponible.';
+      else {
+        const t = firmar({ a: a.id, e: Math.floor(Date.now() / 1000) + 12 * 3600 });
+        return redirigir(res, `/ver/${t}`);
+      }
+    }
+  }
+  return enviar(res, error ? 403 : 200, ingresoCodigo({ titulo: info.titulo, marca, error, codigo }));
+}
+
 /* ------------------------------------------------------------------ rutas */
 
 async function rutas(req, res) {
@@ -412,6 +465,7 @@ async function rutas(req, res) {
   if (p === '/integracion') return enviar(res, 200, pagina({ titulo: 'Guía de integración', cuerpo: guia(baseUrl(req)), nav: esAdmin(req) ? 'panel' : null, activo: 'doc' }));
 
   if (partes[0] === 'ver' && partes[1]) return ver(req, res, partes[1], partes[2]);
+  if (partes[0] === 'e' && /^\d+$/.test(partes[1] || '')) return ingreso(req, res, Number(partes[1]), url);
   if (partes[0] === 'logo' && /^\d+$/.test(partes[1] || '')) {
     const c = db.prepare('SELECT logo FROM clientes WHERE id = ?').get(Number(partes[1]));
     const m = c && c.logo && /^data:(image\/(png|jpeg|webp|svg\+xml));base64,(.+)$/.exec(c.logo);
@@ -474,6 +528,17 @@ async function rutas(req, res) {
     if (!ev) return redirigir(res, '/panel');
     const accion = partes[3];
     if (!accion) return vistaEvento(req, res, ev, url.searchParams.get('creado') ? '<div class="okmsg">Evento creado. Cargá estos datos en vMix u OBS y probá con el reproductor de prueba.</div>' : '');
+    if (accion === 'codigos.csv') {
+      const filas = db.prepare("SELECT comprador, primera_vista, revocado FROM accesos WHERE evento_id = ? AND comprador LIKE 'COD-%' ORDER BY id").all(ev.id);
+      const base = baseUrl(req);
+      const c = (v) => `"${String(v == null ? '' : v).replace(/"/g, '""')}"`;
+      const csv = ['codigo;link_directo;usado;anulado'].concat(filas.map((f) => {
+        const cod = f.comprador.slice(4);
+        const lindo = cod.slice(0, 4) + '-' + cod.slice(4);
+        return [lindo, `${base}/e/${ev.id}?c=${lindo}`, f.primera_vista ? 'si' : 'no', f.revocado ? 'si' : 'no'].map(c).join(';');
+      })).join('\r\n');
+      return enviar(res, 200, '\ufeff' + csv, 'text/csv; charset=utf-8', { 'Content-Disposition': `attachment; filename="codigos-evento-${ev.id}.csv"` });
+    }
     if (accion === 'accesos.csv') {
       const filas = db.prepare('SELECT comprador, creado, primera_vista, ultima_vista, aperturas, revocado FROM accesos WHERE evento_id = ? ORDER BY id').all(ev.id);
       const c = (v) => `"${String(v == null ? '' : v).replace(/"/g, '""')}"`;
@@ -487,6 +552,16 @@ async function rutas(req, res) {
       return redirigir(res, l.url.replace(baseUrl(req), ''));
     }
     if (req.method !== 'POST') return redirigir(res, `/panel/eventos/${ev.id}`);
+    if (accion === 'codigos') {
+      const b = await leerCuerpo(req);
+      const n = Math.min(Math.max(parseInt(b.cantidad, 10) || 0, 1), 2000);
+      const ins = db.prepare('INSERT OR IGNORE INTO accesos (evento_id, comprador, creado) VALUES (?, ?, ?)');
+      let hechos = 0;
+      for (let i = 0; i < n * 3 && hechos < n; i++) {
+        if (ins.run(ev.id, 'COD-' + nuevoCodigo(), ahora()).changes) hechos++;
+      }
+      return vistaEvento(req, res, q.evento(ev.id), `<div class="okmsg">Se generaron ${hechos} códigos. Descargá la lista y pasásela al cliente.</div>`);
+    }
     if (accion === 'activo') {
       db.prepare('UPDATE eventos SET activo = 1 - activo WHERE id = ?').run(ev.id);
       olvidar(ev.id);
