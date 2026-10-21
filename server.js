@@ -186,7 +186,7 @@ async function vistaEvento(req, res, ev, aviso = '') {
     <div class="fila" style="justify-content:space-between"><div><h1>${esc(ev.titulo)}</h1>
     <p class="sub">${esc(ev.cliente)}${ev.fecha ? ' · ' + fechaLinda(ev.fecha) : ''} · ${pill(est.estado)}</p></div>
     <div class="fila">
-      <form method="post" action="/panel/eventos/${ev.id}/prueba" target="_blank"><button class="btn">Ver reproductor de prueba</button></form>
+      <a class="btn" href="/panel/eventos/${ev.id}/prueba" target="_blank" rel="noopener">Ver reproductor de prueba</a>
     </div></div>
     ${aviso}<div style="height:6px"></div>
     ${est.estado === 'error' ? `<div class="error">No pudimos leer el estado en Cloudflare: ${esc(est.error || '')}</div>` : ''}
@@ -468,12 +468,12 @@ async function rutas(req, res) {
         .concat(filas.map((f) => [f.comprador, f.creado, f.primera_vista, f.ultima_vista, f.aperturas, f.revocado ? 'si' : 'no'].map(c).join(','))).join('\n');
       return enviar(res, 200, '﻿' + csv, 'text/csv; charset=utf-8', { 'Content-Disposition': `attachment; filename="entradas-evento-${ev.id}.csv"` });
     }
-    if (req.method !== 'POST') return redirigir(res, `/panel/eventos/${ev.id}`);
     if (accion === 'prueba') {
       const l = linkDeAcceso(req, ev, 'prueba-panel', 12);
       db.prepare('UPDATE accesos SET revocado = 0 WHERE id = ?').run(l.acceso.id);
       return redirigir(res, l.url.replace(baseUrl(req), ''));
     }
+    if (req.method !== 'POST') return redirigir(res, `/panel/eventos/${ev.id}`);
     if (accion === 'activo') {
       db.prepare('UPDATE eventos SET activo = 1 - activo WHERE id = ?').run(ev.id);
       olvidar(ev.id);
