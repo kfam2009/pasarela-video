@@ -1,0 +1,29 @@
+services:
+  - type: web
+    name: pasarela-video
+    runtime: docker
+    plan: starter
+    healthCheckPath: /salud
+    disk:
+      name: datos
+      mountPath: /data
+      sizeGB: 1
+    envVars:
+      - key: BRAND_NAME
+        value: Pasarela Video
+      - key: ADMIN_PASSWORD
+        generateValue: true
+      - key: SECRET_KEY
+        generateValue: true
+      - key: PRECIO_POR_ENTRADA
+        value: "1000"
+      - key: CF_ACCOUNT_ID
+        sync: false
+      - key: CF_API_TOKEN
+        sync: false
+      - key: CF_CUSTOMER_CODE
+        sync: false
+      - key: VIDEO_HOST
+        sync: false
+      - key: BASE_URL
+        sync: false

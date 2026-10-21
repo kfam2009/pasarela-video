@@ -1,0 +1,11 @@
+{
+  "name": "pasarela-video",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Servicio de transmisiones privadas para ticketeras",
+  "main": "server.js",
+  "engines": { "node": ">=22.13" },
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning server.js"
+  }
+}
