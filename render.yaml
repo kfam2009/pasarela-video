@@ -18,11 +18,11 @@ services:
       - key: PRECIO_POR_ENTRADA
         value: "1000"
       - key: CF_ACCOUNT_ID
-        sync: false
+        value: 2dcb204b9febfad4a2bfb1a016916c6c
       - key: CF_API_TOKEN
         sync: false
       - key: CF_CUSTOMER_CODE
-        sync: false
+        value: il0jx6d1ltq7d0ad
       - key: VIDEO_HOST
         sync: false
       - key: BASE_URL
