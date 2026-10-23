@@ -234,6 +234,10 @@ async function vistaEvento(req, res, ev, aviso = '') {
     <h2>Opciones</h2>
     <div class="card fila">
       <form method="post" action="/panel/eventos/${ev.id}/activo"><button class="btn sec">${ev.activo ? 'Desactivar evento' : 'Activar evento'}</button></form>
+      <form method="post" action="/panel/eventos/${ev.id}/limpiar" class="fila">
+        <label class="check" style="margin:0"><input type="checkbox" name="si" value="1" required> Sí, borrar</label>
+        <button class="btn peligro">Borrar todas las entradas y códigos</button>
+      </form>
       <form method="post" action="/panel/eventos/${ev.id}/borrar" data-confirmar="¿Borrar el evento? Se elimina la señal y la grabación en Cloudflare. No se puede deshacer."><button class="btn peligro">Borrar evento</button></form>
       <small>ID del evento para la API: <code>${ev.id}</code> · Grabación: ${ev.grabar ? `sí, repetición ${Number(ev.repeticion_horas) ? ev.repeticion_horas + ' h' : 'sin límite'}` : 'no'}</small>
     </div>`;
@@ -583,6 +587,12 @@ async function rutas(req, res) {
         if (ins.run(ev.id, 'COD-' + nuevoCodigo(), ahora()).changes) hechos++;
       }
       return vistaEvento(req, res, q.evento(ev.id), `<div class="okmsg">Se generaron ${hechos} códigos. Descargá la lista y pasásela al cliente.</div>`);
+    }
+    if (accion === 'limpiar') {
+      const b = await leerCuerpo(req);
+      if (!b.si) return vistaEvento(req, res, ev, '<div class="error">Tildá "Sí, borrar" para confirmar.</div>');
+      const r = db.prepare('DELETE FROM accesos WHERE evento_id = ?').run(ev.id);
+      return vistaEvento(req, res, q.evento(ev.id), `<div class="okmsg">Se borraron ${r.changes} entradas y códigos. El evento quedó en cero.</div>`);
     }
     if (accion === 'activo') {
       db.prepare('UPDATE eventos SET activo = 1 - activo WHERE id = ?').run(ev.id);
