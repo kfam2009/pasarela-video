@@ -210,7 +210,7 @@ async function vistaEvento(req, res, ev, aviso = '') {
         ${codigos.total ? `<a class="btn sec" href="/panel/eventos/${ev.id}/codigos.csv">Descargar lista (${codigos.total})</a>` : ''}
         <small>${codigos.total ? `${codigos.total} códigos · ${codigos.usados} usados` : 'Todavía no hay códigos.'}</small>
       </div>
-      <p class="muted" style="margin-bottom:0">La lista se abre con Excel. Trae cada código y además un <b>link directo</b> que ya incluye el código (para mandar por WhatsApp en un solo mensaje).</p>
+      <p class="muted" style="margin-bottom:0">La lista se abre con Excel. Trae cada código y su <b>link directo</b> (ej. <code>${esc(baseUrl(req))}/ABCD-1234</code>): el comprador lo toca y mira, sin escribir nada.</p>
     </div>
 
     <h2>Datos para vMix / OBS</h2>
@@ -474,6 +474,20 @@ async function rutas(req, res) {
 
   if (partes[0] === 'ver' && partes[1]) return ver(req, res, partes[1], partes[2]);
   if (partes[0] === 'e' && /^\d+$/.test(partes[1] || '')) return ingreso(req, res, Number(partes[1]), url);
+  // Link corto: dominio/CODIGO abre el evento directo, sin escribir nada
+  if (req.method === 'GET' && partes.length === 1 && /^[A-Za-z0-9]{4}-?[A-Za-z0-9]{4}$/.test(partes[0])) {
+    const cod = normalizarCodigo(partes[0]);
+    const ip = String(req.headers['x-forwarded-for'] || req.socket.remoteAddress).split(',')[0].trim();
+    if (!puedeIntentar('cod:' + ip)) return enviar(res, 429, mensaje('Demasiados intentos', 'Esperá unos minutos y volvé a probar.'));
+    const a = db.prepare('SELECT evento_id FROM accesos WHERE comprador = ? ORDER BY id DESC LIMIT 1').get('COD-' + cod);
+    if (!a) {
+      intentos.get('cod:' + ip).push(Date.now());
+      return enviar(res, 404, mensaje('Código no válido', 'Revisá el link que te pasaron con tu entrada.'));
+    }
+    const u = new URL(`http://x/e/${a.evento_id}`);
+    u.searchParams.set('c', cod);
+    return ingreso(req, res, a.evento_id, u);
+  }
   if (partes[0] === 'logo' && /^\d+$/.test(partes[1] || '')) {
     const c = db.prepare('SELECT logo FROM clientes WHERE id = ?').get(Number(partes[1]));
     const m = c && c.logo && /^data:(image\/(png|jpeg|webp|svg\+xml));base64,(.+)$/.exec(c.logo);
@@ -543,7 +557,7 @@ async function rutas(req, res) {
       const csv = ['codigo;link_directo;usado;anulado'].concat(filas.map((f) => {
         const cod = f.comprador.slice(4);
         const lindo = cod.slice(0, 4) + '-' + cod.slice(4);
-        return [lindo, `${base}/e/${ev.id}?c=${lindo}`, f.primera_vista ? 'si' : 'no', f.revocado ? 'si' : 'no'].map(c).join(';');
+        return [lindo, `${base}/${lindo}`, f.primera_vista ? 'si' : 'no', f.revocado ? 'si' : 'no'].map(c).join(';');
       })).join('\r\n');
       return enviar(res, 200, '\ufeff' + csv, 'text/csv; charset=utf-8', { 'Content-Disposition': `attachment; filename="codigos-evento-${ev.id}.csv"` });
     }
