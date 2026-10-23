@@ -263,7 +263,7 @@ function vistaClientes(res, aviso = '') {
           <label class="check"><input type="checkbox" name="activo" value="1" ${c.activo ? 'checked' : ''}> Activo</label>
           <div class="fila" style="margin-top:10px"><button class="btn chico">Guardar</button></div>
         </form>
-        <form method="post" action="/panel/clientes/${c.id}/clave" style="margin-top:8px" data-confirmar="Se genera una clave nueva y la anterior deja de funcionar. ¿Seguir?"><button class="btn peligro chico">Nueva clave de API</button></form>
+        <form method="post" action="/panel/clientes/${c.id}/clave" style="margin-top:8px"><button class="btn peligro chico">Nueva clave de API</button><br><small>La anterior deja de funcionar.</small></form>
       </details></td></tr>`).join('');
   const resumenMeses = meses.length ? `<h2>Entradas por mes</h2><div class="card tabla"><table><thead><tr><th>Mes</th><th>Cliente</th><th>Entradas</th></tr></thead><tbody>
       ${meses.map((m) => `<tr><td>${esc(m.mes)}</td><td>${esc(m.nombre)}</td><td>${m.n}</td></tr>`).join('')}</tbody></table></div>` : '';
