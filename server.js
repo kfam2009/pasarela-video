@@ -238,6 +238,11 @@ async function vistaEvento(req, res, ev, aviso = '') {
         <label class="check" style="margin:0"><input type="checkbox" name="si" value="1" required> Sí, borrar</label>
         <button class="btn peligro">Borrar todas las entradas y códigos</button>
       </form>
+      ${ev.grabar ? `<form method="post" action="/panel/eventos/${ev.id}/grabaciones" class="fila">
+        <label class="check" style="margin:0"><input type="checkbox" name="si" value="1" required> Sí, borrar</label>
+        <button class="btn peligro">Borrar grabaciones</button>
+        <small>Libera el espacio en Cloudflare. La URL y la clave de vMix no cambian.</small>
+      </form>` : ''}
       <form method="post" action="/panel/eventos/${ev.id}/borrar" data-confirmar="¿Borrar el evento? Se elimina la señal y la grabación en Cloudflare. No se puede deshacer."><button class="btn peligro">Borrar evento</button></form>
       <small>ID del evento para la API: <code>${ev.id}</code> · Grabación: ${ev.grabar ? `sí, repetición ${Number(ev.repeticion_horas) ? ev.repeticion_horas + ' h' : 'sin límite'}` : 'no'}</small>
     </div>`;
@@ -593,6 +598,26 @@ async function rutas(req, res) {
       if (!b.si) return vistaEvento(req, res, ev, '<div class="error">Tildá "Sí, borrar" para confirmar.</div>');
       const r = db.prepare('DELETE FROM accesos WHERE evento_id = ?').run(ev.id);
       return vistaEvento(req, res, q.evento(ev.id), `<div class="okmsg">Se borraron ${r.changes} entradas y códigos. El evento quedó en cero.</div>`);
+    }
+    if (accion === 'grabaciones') {
+      const b = await leerCuerpo(req);
+      if (!b.si) return vistaEvento(req, res, ev, '<div class="error">Tildá "Sí, borrar" para confirmar.</div>');
+      if (!ev.cf_uid) return vistaEvento(req, res, ev, '<div class="error">Este evento no tiene señal en Cloudflare.</div>');
+      let grabs;
+      try { grabs = await cf.grabaciones(ev.cf_uid); } catch (e) {
+        return vistaEvento(req, res, ev, `<div class="error">No se pudieron leer las grabaciones: ${esc(e.message)}</div>`);
+      }
+      const borrables = grabs.filter((g) => !g.enVivo);
+      let ok = 0; const fallas = [];
+      for (const g of borrables) {
+        try { await cf.borrarVideo(g.uid); ok++; } catch (e) { if (/404/.test(e.message)) ok++; else fallas.push(e.message); }
+      }
+      olvidar(ev.id);
+      const enCurso = grabs.length - borrables.length;
+      const msg = `Se borraron ${ok} grabación(es).${enCurso ? ' La transmisión en curso no se tocó: borrala cuando termine.' : ''}`;
+      return vistaEvento(req, res, q.evento(ev.id), fallas.length
+        ? `<div class="error">${esc(msg)} No se pudieron borrar ${fallas.length}: ${esc(fallas[0])}</div>`
+        : `<div class="okmsg">${esc(msg)}</div>`);
     }
     if (accion === 'activo') {
       db.prepare('UPDATE eventos SET activo = 1 - activo WHERE id = ?').run(ev.id);
