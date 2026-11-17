@@ -273,6 +273,7 @@ function seccionR2(ev) {
   const lista = db.prepare('SELECT * FROM archivos WHERE evento_id = ? ORDER BY id DESC LIMIT 100').all(ev.id);
   const filas = lista.map((a) => `<tr>
       <td>${fechaLinda(a.grabado || a.creado)}</td><td>${duracionLinda(a.duracion)}</td><td>${tamanoLindo(a.tamano)}</td>
+      <td>${a.estado === 'ok' && archivo.venceEl(a) ? fechaLinda(archivo.venceEl(a)) : '<span class="muted">—</span>'}</td>
       <td>${a.estado === 'ok' ? '<span class="pill ok">Guardado</span>' : a.estado === 'subiendo' ? '<span class="pill">Copiando…</span>' : `<span class="pill">Error</span> <small>${esc(a.error || '')}</small>`}</td>
       <td class="fila">${a.estado === 'ok' ? `<a class="btn sec chico" href="/panel/archivos/${a.id}/bajar">Descargar</a>` : ''}
         ${a.estado !== 'subiendo' ? `<form method="post" action="/panel/archivos/${a.id}/borrar" class="fila" style="margin:0" data-confirmar="¿Borrar este archivo de R2? No se puede recuperar.">
@@ -284,8 +285,15 @@ function seccionR2(ev) {
       ${corriendo ? `<meta http-equiv="refresh" content="10"><div class="okmsg">${esc(t.texto)}</div>`
         : `<form method="post" action="/panel/eventos/${ev.id}/archivar"><button class="btn">Pasar grabaciones a R2 y borrarlas de Stream</button></form>`}
       ${t && !corriendo && t.texto ? `<div class="${t.error ? 'error' : 'okmsg'}" style="margin-top:10px">${esc(t.texto)}${t.error ? ' ' + esc(t.error) : ''}</div>` : ''}
-      ${lista.length ? `<div class="tabla" style="margin-top:12px"><table><thead><tr><th>Grabado</th><th>Duración</th><th>Tamaño</th><th>Estado</th><th></th></tr></thead><tbody>${filas}</tbody></table></div>
+      ${lista.length ? `<div class="tabla" style="margin-top:12px"><table><thead><tr><th>Grabado</th><th>Duración</th><th>Tamaño</th><th>Se borra solo</th><th>Estado</th><th></th></tr></thead><tbody>${filas}</tbody></table></div>
         <small>Total guardado: ${tamanoLindo(total)}. Los links de descarga vencen a las 6 horas.</small>` : '<p class="muted" style="margin-bottom:0">Todavía no hay grabaciones guardadas en R2.</p>'}
+      <form method="post" action="/panel/r2/dias" class="fila" style="margin-top:14px">
+        <label style="margin:0">Borrar solos de R2 a los</label>
+        <input type="number" name="dias" min="0" max="365" value="${archivo.dias()}" style="width:80px">
+        <span>días</span><input type="hidden" name="volver" value="${ev.id}">
+        <button class="btn sec chico">Guardar</button>
+        <small>0 = no se borran nunca. Aplica a todos los eventos. Bajá lo que quieras guardar antes de que venza.</small>
+      </form>
     </div>`;
 }
 
@@ -678,6 +686,12 @@ async function rutas(req, res) {
       olvidar(ev.id);
       return vistaEventos(res, '<div class="okmsg">Evento borrado.</div>');
     }
+  }
+
+  if (p === '/panel/r2/dias' && req.method === 'POST') {
+    const b = await leerCuerpo(req);
+    archivo.dias(b.dias);
+    return redirigir(res, /^\d+$/.test(b.volver || '') ? `/panel/eventos/${b.volver}` : '/panel');
   }
 
   if (partes[1] === 'archivos' && /^\d+$/.test(partes[2] || '')) {
