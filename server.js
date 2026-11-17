@@ -135,7 +135,9 @@ function seccionRele(ev) {
   const vivo = Date.now() - releEstado.visto < 60000;
   const e = releEstado.eventos.get(ev.id);
   let estado = '';
-  if (ev.fuente) {
+  if (ev.fuente && ev.fuente_pausa) {
+    estado = '<span class="pill">En pausa</span> <small>No se toma la señal. Pasado un minuto, Cloudflare cierra la grabación: el próximo partido queda en un archivo aparte.</small>';
+  } else if (ev.fuente) {
     if (!vivo) estado = '<span class="pill">El servidor relé no responde</span>';
     else if (!e) estado = '<span class="pill">Esperando al relé…</span>';
     else if (e.estado === 'transmitiendo') {
@@ -152,8 +154,11 @@ function seccionRele(ev) {
       <form method="post" action="/panel/eventos/${ev.id}/fuente">
         <input name="fuente" value="${esc(ev.fuente || '')}" placeholder="srt://servidor:puerto?streamid=..." style="width:100%">
         <div class="fila" style="margin-top:8px"><button class="btn chico">Guardar</button>
-        ${ev.fuente ? '<button class="btn sec chico" name="quitar" value="1">Dejar de tomar la señal</button>' : ''}</div>
+        ${ev.fuente ? '<button class="btn sec chico" name="quitar" value="1">Quitar el link</button>' : ''}</div>
       </form>
+      ${ev.fuente ? `<form method="post" action="/panel/eventos/${ev.id}/pausa" style="margin-top:12px">
+        <button class="btn ${ev.fuente_pausa ? '' : 'peligro'}" style="font-size:1.05rem;padding:12px 22px">${ev.fuente_pausa ? '▶ Reanudar (empieza partido)' : '■ Pausar (termina partido)'}</button>
+      </form>` : ''}
       ${estado ? `<p style="margin-bottom:0">${estado}</p>` : ''}
       ${releEstado.version ? `<small class="muted">Relé versión ${esc(releEstado.version)}</small>` : ''}
     </div>`;
@@ -599,7 +604,7 @@ async function rutas(req, res) {
       return json(res, 200, { version: crypto.createHash('sha256').update(codigo).digest('hex') });
     }
     if (partes[1] === 'config' && req.method === 'GET') {
-      const evs = db.prepare("SELECT * FROM eventos WHERE activo = 1 AND fuente IS NOT NULL AND fuente <> ''").all();
+      const evs = db.prepare("SELECT * FROM eventos WHERE activo = 1 AND fuente IS NOT NULL AND fuente <> '' AND COALESCE(fuente_pausa, 0) = 0").all();
       return json(res, 200, { relays: evs.map((ev) => {
         const key = descifrar(ev.rtmps_key);
         const rtmps = ev.rtmps_url && key ? ev.rtmps_url.replace(/\/?$/, '/') + key : '';
@@ -714,9 +719,14 @@ async function rutas(req, res) {
       const b = await leerCuerpo(req);
       const f = b.quitar ? '' : String(b.fuente || '').trim();
       if (f && !/^srt:\/\/[^\s]+$/i.test(f)) return vistaEvento(req, res, ev, '<div class="error">El link tiene que empezar con srt:// y no llevar espacios.</div>');
-      db.prepare('UPDATE eventos SET fuente = ? WHERE id = ?').run(f || null, ev.id);
+      db.prepare('UPDATE eventos SET fuente = ?, fuente_pausa = 0 WHERE id = ?').run(f || null, ev.id);
       releEstado.eventos.delete(ev.id);
       return vistaEvento(req, res, q.evento(ev.id), `<div class="okmsg">${f ? 'Guardado. En menos de un minuto el relé empieza a tomar la señal.' : 'Listo, el relé deja de tomar la señal.'}</div>`);
+    }
+    if (accion === 'pausa' && req.method === 'POST') {
+      db.prepare('UPDATE eventos SET fuente_pausa = 1 - COALESCE(fuente_pausa, 0) WHERE id = ?').run(ev.id);
+      releEstado.eventos.delete(ev.id);
+      return redirigir(res, `/panel/eventos/${ev.id}`);
     }
     if (accion === 'titulo') {
       const b = await leerCuerpo(req);
