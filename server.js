@@ -600,7 +600,11 @@ async function rutas(req, res) {
     }
     if (partes[1] === 'config' && req.method === 'GET') {
       const evs = db.prepare("SELECT * FROM eventos WHERE activo = 1 AND fuente IS NOT NULL AND fuente <> ''").all();
-      return json(res, 200, { relays: evs.map((ev) => ({ id: ev.id, titulo: ev.titulo, fuente: ev.fuente, destino: srtCompleta(ev) })).filter((r) => r.destino) });
+      return json(res, 200, { relays: evs.map((ev) => {
+        const key = descifrar(ev.rtmps_key);
+        const rtmps = ev.rtmps_url && key ? ev.rtmps_url.replace(/\/?$/, '/') + key : '';
+        return { id: ev.id, titulo: ev.titulo, fuente: ev.fuente, destino: rtmps || srtCompleta(ev) };
+      }).filter((r) => r.destino) });
     }
     if (partes[1] === 'estado' && req.method === 'POST') {
       const b = await leerCuerpo(req);

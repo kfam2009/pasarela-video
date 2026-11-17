@@ -43,7 +43,8 @@ function arrancar(r) {
     '-hide_banner', '-nostdin', '-loglevel', 'warning', '-progress', 'pipe:1', '-stats_period', '2',
     '-fflags', '+genpts', '-i', fuente,
     '-map', '0:v?', '-map', '0:a?', '-c', 'copy',
-    '-f', 'mpegts', urlSrt(r.cfg.destino),
+    // RTMPS (TCP) si la pasarela lo da; si no, SRT
+    ...(/^rtmps?:/i.test(r.cfg.destino) ? ['-f', 'flv', '-flvflags', 'no_duration_filesize', r.cfg.destino] : ['-f', 'mpegts', urlSrt(r.cfg.destino)]),
   ];
   log(`[${r.cfg.id}] conectando a la fuente`);
   const ch = spawn('ffmpeg', args, { stdio: ['ignore', 'pipe', 'pipe'] });
