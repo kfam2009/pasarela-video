@@ -138,7 +138,12 @@ function seccionRele(ev) {
   if (ev.fuente) {
     if (!vivo) estado = '<span class="pill">El servidor relé no responde</span>';
     else if (!e) estado = '<span class="pill">Esperando al relé…</span>';
-    else if (e.estado === 'transmitiendo') estado = `<span class="pill vivo">Recibiendo y enviando</span> <small>desde ${fechaLinda(e.desde)}</small>`;
+    else if (e.estado === 'transmitiendo') {
+      const st = e.stats || {};
+      const kb = parseFloat(st.bitrate);
+      const num = [st.fps ? `${Math.round(parseFloat(st.fps))} cuadros/s` : '', kb ? `${(kb / 1000).toFixed(1)} Mbps` : '', st.velocidad ? `velocidad ${esc(st.velocidad)}` : ''].filter(Boolean).join(' · ');
+      estado = `<span class="pill vivo">Recibiendo y enviando</span> <small>desde ${fechaLinda(e.desde)}${num ? ' · ' + num : ''}${e.quieto > 6 ? ` · <b>sin imagen nueva hace ${e.quieto} s</b>` : ''}</small>`;
+    }
     else estado = `<span class="pill">${e.estado === 'conectando' ? 'Conectando…' : 'Sin señal de origen, reintentando'}</span> ${e.msg ? `<small>${esc(e.msg)}</small>` : ''}`;
   }
   return `<h2>Tomar la señal de otro servidor</h2>
@@ -150,6 +155,7 @@ function seccionRele(ev) {
         ${ev.fuente ? '<button class="btn sec chico" name="quitar" value="1">Dejar de tomar la señal</button>' : ''}</div>
       </form>
       ${estado ? `<p style="margin-bottom:0">${estado}</p>` : ''}
+      ${releEstado.version ? `<small class="muted">Relé versión ${esc(releEstado.version)}</small>` : ''}
     </div>`;
 }
 
@@ -587,13 +593,19 @@ async function rutas(req, res) {
   if (partes[0] === 'relay' && config.relayClave) {
     if (!iguales(req.headers.authorization || '', 'Bearer ' + config.relayClave)) return json(res, 401, { error: 'Clave incorrecta' });
     releEstado.visto = Date.now();
+    if (partes[1] === 'version' || partes[1] === 'codigo') {
+      const codigo = fs.readFileSync(path.join(__dirname, 'relay', 'relay.js'));
+      if (partes[1] === 'codigo') return enviar(res, 200, codigo, 'application/javascript; charset=utf-8');
+      return json(res, 200, { version: crypto.createHash('sha256').update(codigo).digest('hex') });
+    }
     if (partes[1] === 'config' && req.method === 'GET') {
       const evs = db.prepare("SELECT * FROM eventos WHERE activo = 1 AND fuente IS NOT NULL AND fuente <> ''").all();
       return json(res, 200, { relays: evs.map((ev) => ({ id: ev.id, titulo: ev.titulo, fuente: ev.fuente, destino: srtCompleta(ev) })).filter((r) => r.destino) });
     }
     if (partes[1] === 'estado' && req.method === 'POST') {
       const b = await leerCuerpo(req);
-      releEstado.eventos = new Map((b.relays || []).map((r) => [Number(r.id), { estado: String(r.estado || ''), msg: String(r.msg || '').slice(0, 300), desde: r.desde || null }]));
+      releEstado.version = String(b.version || '');
+      releEstado.eventos = new Map((b.relays || []).map((r) => [Number(r.id), { estado: String(r.estado || ''), msg: String(r.msg || '').slice(0, 300), desde: r.desde || null, stats: r.stats || {}, quieto: Number(r.quieto) || 0 }]));
       return json(res, 200, { ok: true });
     }
     return json(res, 404, { error: 'Ruta desconocida' });
