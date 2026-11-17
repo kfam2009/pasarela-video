@@ -39,6 +39,14 @@ Desde cada evento: **Pasar grabaciones a R2 y borrarlas de Stream**. Las copia p
 2. Workers → Create → pegar `worker/r2-worker.js`. En Settings: binding R2 `BUCKET` → ese bucket, y secreto `CLAVE`.
 3. En Render: `R2_WORKER_URL` (la URL del Worker) y `R2_CLAVE` (la misma clave).
 
+## Relé: tomar la señal de otro servidor (opcional)
+
+Para señales que hay que ir a buscar (ej. un link SRT de Castr con `m=request`). Un servidor chico en la nube corre `relay/relay.js` con ffmpeg: le pregunta a la pasarela qué eventos tienen un link en "Tomar la señal de otro servidor" y manda cada señal, sin recodificar, al SRT del evento. El link se cambia desde el panel.
+
+1. En Render: `RELAY_CLAVE` (una clave larga cualquiera).
+2. Crear un servidor Ubuntu 24.04 (ej. Vultr São Paulo) pegando `relay/cloud-init.yaml` como *Cloud-Init User-Data*, con `CAMBIAR_POR_RELAY_CLAVE` reemplazado por esa clave.
+3. En el evento, pegar el link SRT de origen.
+
 ## Local
 
 ```

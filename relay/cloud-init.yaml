@@ -1,0 +1,143 @@
+#cloud-config
+# Relé de señal de la pasarela: toma una señal SRT de otro servidor y la manda a Cloudflare.
+package_update: true
+packages:
+  - ffmpeg
+  - nodejs
+write_files:
+  - path: /opt/rele/relay.js
+    permissions: '0644'
+    content: |
+      'use strict';
+      /**
+       * Relé de señal: corre en un servidor en la nube (no en Render).
+       *
+       * Cada 20 s le pregunta a la pasarela qué eventos tienen "Tomar la señal de otro servidor"
+       * (link SRT de origen, ej. Castr) y para cada uno deja corriendo ffmpeg que toma esa señal
+       * y la manda, sin recodificar, al SRT del evento en Cloudflare. Si la señal se corta, reintenta.
+       * Le informa a la pasarela el estado de cada uno, que se ve en el panel.
+       *
+       * Variables: PASARELA (ej. https://pasarela-video.onrender.com) y CLAVE (= RELAY_CLAVE en Render).
+       */
+      const { spawn } = require('node:child_process');
+
+      const BASE = String(process.env.PASARELA || '').replace(/\/+$/, '');
+      const CLAVE = process.env.CLAVE || '';
+      if (!BASE || !CLAVE) { console.error('Faltan PASARELA y CLAVE'); process.exit(1); }
+
+      const relays = new Map(); // id -> { cfg, child, estado, msg, desde, parado, timer }
+
+      const log = (...a) => console.log(new Date().toISOString(), ...a);
+
+      /** ffmpeg quiere el # del streamid escrito como %23 (si no, lo toma como fin de la URL). */
+      function urlSrt(u) {
+        return String(u).replace(/#/g, '%23');
+      }
+
+      function arrancar(r) {
+        r.parado = false;
+        r.estado = 'conectando';
+        r.desde = null;
+        const fuente = urlSrt(r.cfg.fuente) + (r.cfg.fuente.includes('?') ? '&' : '?') + 'mode=caller&timeout=10000000';
+        const args = [
+          '-hide_banner', '-nostdin', '-loglevel', 'error', '-progress', 'pipe:1', '-stats_period', '5',
+          '-i', fuente,
+          '-map', '0:v?', '-map', '0:a?', '-c', 'copy',
+          '-f', 'mpegts', urlSrt(r.cfg.destino),
+        ];
+        log(`[${r.cfg.id}] conectando a la fuente`);
+        const ch = spawn('ffmpeg', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+        r.child = ch;
+        ch.stdout.on('data', (d) => {
+          // -progress escribe "out_time_us=..." mientras avanza: hay señal pasando
+          const m = /out_time_us=(\d+)/.exec(String(d));
+          if (m && Number(m[1]) > 0 && r.estado !== 'transmitiendo') {
+            r.estado = 'transmitiendo';
+            r.desde = new Date().toISOString();
+            r.msg = '';
+            log(`[${r.cfg.id}] transmitiendo`);
+          }
+        });
+        ch.stderr.on('data', (d) => {
+          const linea = String(d).trim().split('\n').pop();
+          if (linea) r.msg = linea.slice(0, 300);
+        });
+        ch.on('exit', (code) => {
+          if (r.child !== ch) return;
+          r.child = null;
+          if (r.parado) return;
+          log(`[${r.cfg.id}] se cortó (código ${code}) ${r.msg || ''}`);
+          r.estado = 'reintentando';
+          r.desde = null;
+          r.timer = setTimeout(() => arrancar(r), 5000);
+        });
+      }
+
+      function parar(r) {
+        r.parado = true;
+        clearTimeout(r.timer);
+        if (r.child) r.child.kill('SIGTERM');
+      }
+
+      async function ciclo() {
+        let lista;
+        try {
+          const res = await fetch(BASE + '/relay/config', { headers: { Authorization: 'Bearer ' + CLAVE }, signal: AbortSignal.timeout(15000) });
+          if (!res.ok) throw new Error('la pasarela respondió ' + res.status);
+          lista = (await res.json()).relays || [];
+        } catch (e) {
+          log('no pude leer la configuración:', e.message);
+          return; // sigue con lo que ya estaba corriendo
+        }
+        const ids = new Set(lista.map((c) => c.id));
+        for (const [id, r] of relays) {
+          if (!ids.has(id)) { log(`[${id}] quitado del panel: paro`); parar(r); relays.delete(id); }
+        }
+        for (const c of lista) {
+          const r = relays.get(c.id);
+          if (!r) {
+            const n = { cfg: c };
+            relays.set(c.id, n);
+            arrancar(n);
+          } else if (r.cfg.fuente !== c.fuente || r.cfg.destino !== c.destino) {
+            log(`[${c.id}] cambió el link: reinicio`);
+            parar(r);
+            r.cfg = c;
+            arrancar(r);
+          }
+        }
+        try {
+          await fetch(BASE + '/relay/estado', {
+            method: 'POST',
+            headers: { Authorization: 'Bearer ' + CLAVE, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ relays: [...relays.values()].map((r) => ({ id: r.cfg.id, estado: r.estado, msg: r.msg, desde: r.desde })) }),
+            signal: AbortSignal.timeout(15000),
+          });
+        } catch { /* la próxima vuelta informa */ }
+      }
+
+      process.on('SIGTERM', () => { for (const r of relays.values()) parar(r); process.exit(0); });
+      log('relé arrancado, pasarela:', BASE);
+      ciclo();
+      setInterval(ciclo, 20000);
+
+  - path: /etc/systemd/system/rele.service
+    permissions: '0644'
+    content: |
+      [Unit]
+      Description=Relé de señal de la pasarela
+      After=network-online.target
+      Wants=network-online.target
+
+      [Service]
+      Environment=PASARELA=https://pasarela-video.onrender.com
+      Environment=CLAVE=CAMBIAR_POR_RELAY_CLAVE
+      ExecStart=/usr/bin/node /opt/rele/relay.js
+      Restart=always
+      RestartSec=5
+
+      [Install]
+      WantedBy=multi-user.target
+runcmd:
+  - systemctl daemon-reload
+  - systemctl enable --now rele.service

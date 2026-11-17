@@ -127,6 +127,32 @@ function pill(estado) {
   return `<span class="pill ${esc(estado)}">${esc(TEXTOS[estado] || estado)}</span>`;
 }
 
+// Estado que informa el relé (relay/relay.js) de cada evento con señal externa
+const releEstado = { visto: 0, eventos: new Map() };
+
+function seccionRele(ev) {
+  if (!config.relayClave) return '';
+  const vivo = Date.now() - releEstado.visto < 60000;
+  const e = releEstado.eventos.get(ev.id);
+  let estado = '';
+  if (ev.fuente) {
+    if (!vivo) estado = '<span class="pill">El servidor relé no responde</span>';
+    else if (!e) estado = '<span class="pill">Esperando al relé…</span>';
+    else if (e.estado === 'transmitiendo') estado = `<span class="pill vivo">Recibiendo y enviando</span> <small>desde ${fechaLinda(e.desde)}</small>`;
+    else estado = `<span class="pill">${e.estado === 'conectando' ? 'Conectando…' : 'Sin señal de origen, reintentando'}</span> ${e.msg ? `<small>${esc(e.msg)}</small>` : ''}`;
+  }
+  return `<h2>Tomar la señal de otro servidor</h2>
+    <div class="card">
+      <p class="muted" style="margin-top:0">Pegá un link SRT (por ejemplo de Castr). El servidor relé en la nube toma esa señal y la manda a este evento, sin pasar por ninguna PC. Si la señal se corta, reintenta solo.</p>
+      <form method="post" action="/panel/eventos/${ev.id}/fuente">
+        <input name="fuente" value="${esc(ev.fuente || '')}" placeholder="srt://servidor:puerto?streamid=..." style="width:100%">
+        <div class="fila" style="margin-top:8px"><button class="btn chico">Guardar</button>
+        ${ev.fuente ? '<button class="btn sec chico" name="quitar" value="1">Dejar de tomar la señal</button>' : ''}</div>
+      </form>
+      ${estado ? `<p style="margin-bottom:0">${estado}</p>` : ''}
+    </div>`;
+}
+
 function srtCompleta(ev) {
   const pass = descifrar(ev.srt_pass);
   if (!ev.srt_url) return '';
@@ -236,6 +262,8 @@ async function vistaEvento(req, res, ev, aviso = '') {
     <div class="card tabla">${accesos.length ? `<table><thead><tr><th>Comprador (ID de la ticketera)</th><th>Emitida</th><th>Primera vez que entró</th><th>Aperturas</th><th>Estado</th></tr></thead><tbody>${filas}</tbody></table>
       ${accesos.length === 200 ? '<p class="muted">Se muestran las últimas 200. El CSV tiene todas.</p>' : ''}`
       : '<p class="muted" style="margin:0">Todavía no se emitieron entradas para este evento.</p>'}</div>
+
+    ${seccionRele(ev)}
 
     ${ev.grabar ? seccionR2(ev) : ''}
 
@@ -556,6 +584,20 @@ async function rutas(req, res) {
     if (!m) return enviar(res, 404, 'No encontrado', 'text/plain');
     return enviar(res, 200, Buffer.from(m[3], 'base64'), m[1], { 'Cache-Control': 'public, max-age=300', 'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'" });
   }
+  if (partes[0] === 'relay' && config.relayClave) {
+    if (!iguales(req.headers.authorization || '', 'Bearer ' + config.relayClave)) return json(res, 401, { error: 'Clave incorrecta' });
+    releEstado.visto = Date.now();
+    if (partes[1] === 'config' && req.method === 'GET') {
+      const evs = db.prepare("SELECT * FROM eventos WHERE activo = 1 AND fuente IS NOT NULL AND fuente <> ''").all();
+      return json(res, 200, { relays: evs.map((ev) => ({ id: ev.id, titulo: ev.titulo, fuente: ev.fuente, destino: srtCompleta(ev) })).filter((r) => r.destino) });
+    }
+    if (partes[1] === 'estado' && req.method === 'POST') {
+      const b = await leerCuerpo(req);
+      releEstado.eventos = new Map((b.relays || []).map((r) => [Number(r.id), { estado: String(r.estado || ''), msg: String(r.msg || '').slice(0, 300), desde: r.desde || null }]));
+      return json(res, 200, { ok: true });
+    }
+    return json(res, 404, { error: 'Ruta desconocida' });
+  }
   if (partes[0] === 'api' && partes[1] === 'v1') return api(req, res, partes.slice(2));
 
   if (partes[0] !== 'panel') return enviar(res, 404, pagina({ titulo: 'No encontrado', cuerpo: '<h1>No encontrado</h1>' }));
@@ -651,6 +693,14 @@ async function rutas(req, res) {
       if (!b.si) return vistaEvento(req, res, ev, '<div class="error">Tildá "Sí, borrar" para confirmar.</div>');
       const r = db.prepare('DELETE FROM accesos WHERE evento_id = ?').run(ev.id);
       return vistaEvento(req, res, q.evento(ev.id), `<div class="okmsg">Se borraron ${r.changes} entradas y códigos. El evento quedó en cero.</div>`);
+    }
+    if (accion === 'fuente') {
+      const b = await leerCuerpo(req);
+      const f = b.quitar ? '' : String(b.fuente || '').trim();
+      if (f && !/^srt:\/\/[^\s]+$/i.test(f)) return vistaEvento(req, res, ev, '<div class="error">El link tiene que empezar con srt:// y no llevar espacios.</div>');
+      db.prepare('UPDATE eventos SET fuente = ? WHERE id = ?').run(f || null, ev.id);
+      releEstado.eventos.delete(ev.id);
+      return vistaEvento(req, res, q.evento(ev.id), `<div class="okmsg">${f ? 'Guardado. En menos de un minuto el relé empieza a tomar la señal.' : 'Listo, el relé deja de tomar la señal.'}</div>`);
     }
     if (accion === 'titulo') {
       const b = await leerCuerpo(req);
