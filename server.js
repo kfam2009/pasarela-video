@@ -186,7 +186,12 @@ async function vistaEvento(req, res, ev, aviso = '') {
   const cuerpo = `
     <p><a href="/panel">← Eventos</a></p>
     <div class="fila" style="justify-content:space-between"><div><h1>${esc(ev.titulo)}</h1>
-    <p class="sub">${esc(ev.cliente)}${ev.fecha ? ' · ' + fechaLinda(ev.fecha) : ''} · ${pill(est.estado)}</p></div>
+    <p class="sub">${esc(ev.cliente)}${ev.fecha ? ' · ' + fechaLinda(ev.fecha) : ''} · ${pill(est.estado)}</p>
+    <details><summary class="btn sec chico">Cambiar nombre</summary>
+      <form method="post" action="/panel/eventos/${ev.id}/titulo" class="fila" style="margin-top:8px">
+        <input name="titulo" required maxlength="140" value="${esc(ev.titulo)}" style="min-width:260px">
+        <button class="btn chico">Guardar</button>
+      </form></details></div>
     <div class="fila">
       <a class="btn" href="/panel/eventos/${ev.id}/prueba" target="_blank" rel="noopener">Ver reproductor de prueba</a>
     </div></div>
@@ -646,6 +651,13 @@ async function rutas(req, res) {
       if (!b.si) return vistaEvento(req, res, ev, '<div class="error">Tildá "Sí, borrar" para confirmar.</div>');
       const r = db.prepare('DELETE FROM accesos WHERE evento_id = ?').run(ev.id);
       return vistaEvento(req, res, q.evento(ev.id), `<div class="okmsg">Se borraron ${r.changes} entradas y códigos. El evento quedó en cero.</div>`);
+    }
+    if (accion === 'titulo') {
+      const b = await leerCuerpo(req);
+      const titulo = String(b.titulo || '').trim().slice(0, 140);
+      if (!titulo) return vistaEvento(req, res, ev, '<div class="error">El nombre no puede quedar vacío.</div>');
+      db.prepare('UPDATE eventos SET titulo = ? WHERE id = ?').run(titulo, ev.id);
+      return vistaEvento(req, res, q.evento(ev.id), '<div class="okmsg">Nombre cambiado. La URL y la clave de vMix siguen iguales.</div>');
     }
     if (accion === 'archivar') {
       if (!config.r2Listo()) return vistaEvento(req, res, ev, '<div class="error">Falta configurar R2 en Render.</div>');
