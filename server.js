@@ -6,6 +6,7 @@ const crypto = require('node:crypto');
 const config = require('./lib/config');
 const { db } = require('./lib/db');
 const cf = require('./lib/cloudflare');
+const archivo = require('./lib/archivo');
 const { estadoEvento, olvidar, TEXTOS } = require('./lib/estado');
 const { pagina, reproductor, mensaje, ingresoCodigo } = require('./lib/vistas');
 const { firmar, verificar, cifrar, descifrar, sha256, esc, ahora, fechaLinda, plata } = require('./lib/util');
@@ -231,6 +232,8 @@ async function vistaEvento(req, res, ev, aviso = '') {
       ${accesos.length === 200 ? '<p class="muted">Se muestran las últimas 200. El CSV tiene todas.</p>' : ''}`
       : '<p class="muted" style="margin:0">Todavía no se emitieron entradas para este evento.</p>'}</div>
 
+    ${ev.grabar ? seccionR2(ev) : ''}
+
     <h2>Opciones</h2>
     <div class="card fila">
       <form method="post" action="/panel/eventos/${ev.id}/activo"><button class="btn sec">${ev.activo ? 'Desactivar evento' : 'Activar evento'}</button></form>
@@ -247,6 +250,43 @@ async function vistaEvento(req, res, ev, aviso = '') {
       <small>ID del evento para la API: <code>${ev.id}</code> · Grabación: ${ev.grabar ? `sí, repetición ${Number(ev.repeticion_horas) ? ev.repeticion_horas + ' h' : 'sin límite'}` : 'no'}</small>
     </div>`;
   enviar(res, 200, pagina({ titulo: ev.titulo, cuerpo, nav: 'panel', activo: 'eventos' }));
+}
+
+function tamanoLindo(b) {
+  const n = Number(b) || 0;
+  return n >= 1073741824 ? (n / 1073741824).toFixed(2) + ' GB' : Math.round(n / 1048576) + ' MB';
+}
+
+function duracionLinda(seg) {
+  const s = Math.round(Number(seg) || 0);
+  if (!s) return '';
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
+  return h ? `${h} h ${String(m).padStart(2, '0')} min` : `${m} min`;
+}
+
+function seccionR2(ev) {
+  if (!config.r2Listo()) {
+    return `<h2>Backup en R2</h2><div class="card"><p class="muted" style="margin:0">Para pasar las grabaciones a R2 falta configurar <code>R2_WORKER_URL</code> y <code>R2_CLAVE</code> en Render.</p></div>`;
+  }
+  const t = archivo.estado(ev.id);
+  const corriendo = t && t.activo;
+  const lista = db.prepare('SELECT * FROM archivos WHERE evento_id = ? ORDER BY id DESC LIMIT 100').all(ev.id);
+  const filas = lista.map((a) => `<tr>
+      <td>${fechaLinda(a.grabado || a.creado)}</td><td>${duracionLinda(a.duracion)}</td><td>${tamanoLindo(a.tamano)}</td>
+      <td>${a.estado === 'ok' ? '<span class="pill ok">Guardado</span>' : a.estado === 'subiendo' ? '<span class="pill">Copiando…</span>' : `<span class="pill">Error</span> <small>${esc(a.error || '')}</small>`}</td>
+      <td class="fila">${a.estado === 'ok' ? `<a class="btn sec chico" href="/panel/archivos/${a.id}/bajar">Descargar</a>` : ''}
+        ${a.estado !== 'subiendo' ? `<form method="post" action="/panel/archivos/${a.id}/borrar" class="fila" style="margin:0" data-confirmar="¿Borrar este archivo de R2? No se puede recuperar.">
+          <button class="btn peligro chico">Borrar</button></form>` : ''}</td></tr>`).join('');
+  const total = lista.filter((a) => a.estado === 'ok').reduce((n, a) => n + (Number(a.tamano) || 0), 0);
+  return `<h2>Backup en R2</h2>
+    <div class="card">
+      <p class="muted" style="margin-top:0">Copia las grabaciones de este evento a R2 y, cuando la copia está completa, las borra de Stream para liberar espacio. La URL y la clave de vMix no cambian.</p>
+      ${corriendo ? `<meta http-equiv="refresh" content="10"><div class="okmsg">${esc(t.texto)}</div>`
+        : `<form method="post" action="/panel/eventos/${ev.id}/archivar"><button class="btn">Pasar grabaciones a R2 y borrarlas de Stream</button></form>`}
+      ${t && !corriendo && t.texto ? `<div class="${t.error ? 'error' : 'okmsg'}" style="margin-top:10px">${esc(t.texto)}${t.error ? ' ' + esc(t.error) : ''}</div>` : ''}
+      ${lista.length ? `<div class="tabla" style="margin-top:12px"><table><thead><tr><th>Grabado</th><th>Duración</th><th>Tamaño</th><th>Estado</th><th></th></tr></thead><tbody>${filas}</tbody></table></div>
+        <small>Total guardado: ${tamanoLindo(total)}. Los links de descarga vencen a las 6 horas.</small>` : '<p class="muted" style="margin-bottom:0">Todavía no hay grabaciones guardadas en R2.</p>'}
+    </div>`;
 }
 
 function vistaClientes(res, aviso = '') {
@@ -599,6 +639,12 @@ async function rutas(req, res) {
       const r = db.prepare('DELETE FROM accesos WHERE evento_id = ?').run(ev.id);
       return vistaEvento(req, res, q.evento(ev.id), `<div class="okmsg">Se borraron ${r.changes} entradas y códigos. El evento quedó en cero.</div>`);
     }
+    if (accion === 'archivar') {
+      if (!config.r2Listo()) return vistaEvento(req, res, ev, '<div class="error">Falta configurar R2 en Render.</div>');
+      if (!ev.cf_uid) return vistaEvento(req, res, ev, '<div class="error">Este evento no tiene señal en Cloudflare.</div>');
+      archivo.archivar(ev);
+      return redirigir(res, `/panel/eventos/${ev.id}`);
+    }
     if (accion === 'grabaciones') {
       const b = await leerCuerpo(req);
       if (!b.si) return vistaEvento(req, res, ev, '<div class="error">Tildá "Sí, borrar" para confirmar.</div>');
@@ -632,6 +678,20 @@ async function rutas(req, res) {
       olvidar(ev.id);
       return vistaEventos(res, '<div class="okmsg">Evento borrado.</div>');
     }
+  }
+
+  if (partes[1] === 'archivos' && /^\d+$/.test(partes[2] || '')) {
+    const a = db.prepare('SELECT * FROM archivos WHERE id = ?').get(Number(partes[2]));
+    if (!a || !config.r2Listo()) return redirigir(res, '/panel');
+    if (partes[3] === 'bajar' && a.estado === 'ok') return redirigir(res, archivo.linkBajar(a));
+    if (partes[3] === 'borrar' && req.method === 'POST' && a.estado !== 'subiendo') {
+      const ev = q.evento(a.evento_id);
+      try { await archivo.borrar(a); } catch (e) {
+        return ev ? vistaEvento(req, res, ev, `<div class="error">No se pudo borrar de R2: ${esc(e.message)}</div>`) : redirigir(res, '/panel');
+      }
+      return ev ? vistaEvento(req, res, q.evento(ev.id), '<div class="okmsg">Archivo borrado de R2.</div>') : redirigir(res, '/panel');
+    }
+    return redirigir(res, `/panel/eventos/${a.evento_id}`);
   }
 
   if (p === '/panel/clientes') {

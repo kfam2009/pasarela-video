@@ -21,6 +21,8 @@ Sin dependencias: Node 22 puro (`node:sqlite`). Los datos viven en `DATA_DIR` (d
 | `CF_CUSTOMER_CODE` | Código de cliente de Stream (`customer-XXXX`) |
 | `VIDEO_HOST` | Dominio del Worker, ej. `video.midominio.com` (vacío = sin ocultar, solo pruebas) |
 | `BASE_URL` | URL pública del servicio, ej. `https://play.midominio.com` |
+| `R2_WORKER_URL` | (Opcional) URL del Worker copiador a R2, ej. `https://pasarela-r2.xxx.workers.dev` |
+| `R2_CLAVE` | (Opcional) Clave compartida con ese Worker (secreto `CLAVE`) |
 
 ## Puesta en marcha
 
@@ -28,6 +30,14 @@ Sin dependencias: Node 22 puro (`node:sqlite`). Los datos viven en `DATA_DIR` (d
 2. Worker: Cloudflare → Workers → Create → pegar `worker/worker.js`, variable `CUSTOMER_CODE`, y asignarle el dominio `video.midominio.com` (Custom Domain).
 3. En Render, dominio propio `play.midominio.com` y `BASE_URL` / `VIDEO_HOST`.
 4. Panel → Clientes → crear el cliente → pasarle su clave y el link a `/integracion`.
+
+## Backup en R2 (opcional)
+
+Desde cada evento: **Pasar grabaciones a R2 y borrarlas de Stream**. Las copia por partes con un Worker dentro de Cloudflare (no pasan por Render) y solo borra de Stream cuando la copia en R2 quedó con el mismo tamaño.
+
+1. Cloudflare → R2 → crear bucket (ej. `pasarela-backup`).
+2. Workers → Create → pegar `worker/r2-worker.js`. En Settings: binding R2 `BUCKET` → ese bucket, y secreto `CLAVE`.
+3. En Render: `R2_WORKER_URL` (la URL del Worker) y `R2_CLAVE` (la misma clave).
 
 ## Local
 
