@@ -130,13 +130,20 @@ function pill(estado) {
 // Estado que informa el relé (relay/relay.js) de cada evento con señal externa
 const releEstado = { visto: 0, eventos: new Map() };
 
-function seccionRele(ev) {
+const ESPERA_CORTE = 90; // segundos: Cloudflare cierra la grabación al minuto sin señal
+function seccionRele(ev, est) {
   if (!config.relayClave) return '';
   const vivo = Date.now() - releEstado.visto < 60000;
   const e = releEstado.eventos.get(ev.id);
   let estado = '';
+  const faltan = ev.fuente_pausa && ev.fuente_pausa_desde ? Math.max(0, ESPERA_CORTE - Math.floor((Date.now() - Number(ev.fuente_pausa_desde)) / 1000)) : 0;
   if (ev.fuente && ev.fuente_pausa) {
-    estado = '<span class="pill">En pausa</span> <small>No se toma la señal. Pasado un minuto, Cloudflare cierra la grabación: el próximo partido queda en un archivo aparte.</small>';
+    const sigueVivo = est && est.estado === 'vivo';
+    estado = sigueVivo && faltan === 0
+      ? '<span class="pill" style="background:#c62828;color:#fff">⚠ Sigue llegando señal por otro lado</span> <small><b>El relé está en pausa, pero el evento sigue en vivo</b>: alguien más está mandando a este evento (¿un destino en Castr o vMix con esta URL y clave?). Mientras siga, la grabación no se corta.</small>'
+      : faltan > 0
+        ? `<span class="pill">En pausa</span> <small>Esperá <b id="faltan">${faltan}</b> s antes de reanudar: así Cloudflare cierra la grabación y el próximo partido queda en un archivo aparte.</small>`
+        : '<span class="pill ok">En pausa · grabación cerrada</span> <small>Ya podés reanudar: el próximo partido queda en un archivo aparte.</small>';
   } else if (ev.fuente) {
     if (!vivo) estado = '<span class="pill">El servidor relé no responde</span>';
     else if (!e) estado = '<span class="pill">Esperando al relé…</span>';
@@ -157,8 +164,8 @@ function seccionRele(ev) {
         ${ev.fuente ? '<button class="btn sec chico" name="quitar" value="1">Quitar el link</button>' : ''}</div>
       </form>
       ${ev.fuente ? `<form method="post" action="/panel/eventos/${ev.id}/pausa" style="margin-top:12px">
-        <button class="btn ${ev.fuente_pausa ? '' : 'peligro'}" style="font-size:1.05rem;padding:12px 22px">${ev.fuente_pausa ? '▶ Reanudar (empieza partido)' : '■ Pausar (termina partido)'}</button>
-      </form>` : ''}
+        <button id="bpausa" class="btn ${ev.fuente_pausa ? '' : 'peligro'}" style="font-size:1.05rem;padding:12px 22px" ${faltan > 0 ? 'disabled' : ''}>${ev.fuente_pausa ? (faltan > 0 ? `▶ Reanudar (en ${faltan} s)` : '▶ Reanudar (empieza partido)') : '■ Pausar (termina partido)'}</button>
+      </form>${faltan > 0 ? `<script>(function(){var n=${faltan},b=document.getElementById('bpausa'),f=document.getElementById('faltan');var t=setInterval(function(){n--;if(f)f.textContent=n;if(n<=0){clearInterval(t);location.reload()}else b.textContent='▶ Reanudar (en '+n+' s)'},1000)})()</script>` : ''}` : ''}
       ${estado ? `<p style="margin-bottom:0">${estado}</p>` : ''}
       ${releEstado.version ? `<small class="muted">Relé versión ${esc(releEstado.version)}</small>` : ''}
     </div>`;
@@ -274,7 +281,7 @@ async function vistaEvento(req, res, ev, aviso = '') {
       ${accesos.length === 200 ? '<p class="muted">Se muestran las últimas 200. El CSV tiene todas.</p>' : ''}`
       : '<p class="muted" style="margin:0">Todavía no se emitieron entradas para este evento.</p>'}</div>
 
-    ${seccionRele(ev)}
+    ${seccionRele(ev, est)}
 
     ${ev.grabar ? seccionR2(ev) : ''}
 
@@ -724,7 +731,10 @@ async function rutas(req, res) {
       return vistaEvento(req, res, q.evento(ev.id), `<div class="okmsg">${f ? 'Guardado. En menos de un minuto el relé empieza a tomar la señal.' : 'Listo, el relé deja de tomar la señal.'}</div>`);
     }
     if (accion === 'pausa' && req.method === 'POST') {
-      db.prepare('UPDATE eventos SET fuente_pausa = 1 - COALESCE(fuente_pausa, 0) WHERE id = ?').run(ev.id);
+      if (ev.fuente_pausa && ev.fuente_pausa_desde && Date.now() - Number(ev.fuente_pausa_desde) < ESPERA_CORTE * 1000) {
+        return redirigir(res, `/panel/eventos/${ev.id}`); // todavía no se cerró la grabación
+      }
+      db.prepare('UPDATE eventos SET fuente_pausa = 1 - COALESCE(fuente_pausa, 0), fuente_pausa_desde = ? WHERE id = ?').run(ev.fuente_pausa ? null : Date.now(), ev.id);
       releEstado.eventos.delete(ev.id);
       return redirigir(res, `/panel/eventos/${ev.id}`);
     }
