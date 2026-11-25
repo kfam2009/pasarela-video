@@ -130,7 +130,67 @@ function pill(estado) {
 // Estado que informa el relé (relay/relay.js) de cada evento con señal externa
 const releEstado = { visto: 0, eventos: new Map() };
 
+/* ---- Grabación programada: el relé se reanuda y se pausa solo en los horarios del evento (hora de Argentina) */
+function minutosAR(d = new Date()) {
+  const p = d.toLocaleString('en-GB', { timeZone: 'America/Argentina/Buenos_Aires', hour: '2-digit', minute: '2-digit', hour12: false }).split(':');
+  return (Number(p[0]) % 24) * 60 + Number(p[1]);
+}
+function leerHoras(txt) {
+  return String(txt || '').split(/[,;\s]+/).map((h) => /^(\d{1,2})(?::(\d{2}))?$/.exec(h.trim())).filter(Boolean)
+    .map((m) => (Number(m[1]) % 24) * 60 + Number(m[2] || 0));
+}
+const hhmm = (m) => `${String(Math.floor(((m % 1440) + 1440) % 1440 / 60)).padStart(2, '0')}:${String(((m % 60) + 60) % 60).padStart(2, '0')}`;
+/** Dentro de un horario: {dentro, inicio, fin}; si no, el próximo inicio. */
+function ventana(ev, ahora = minutosAR()) {
+  const horas = leerHoras(ev.prog_horas), dur = Number(ev.prog_dur) || 0;
+  if (!horas.length || !dur) return null;
+  for (const h of horas) if ((ahora - h + 1440) % 1440 < dur) return { dentro: true, inicio: h, fin: h + dur };
+  const prox = horas.map((h) => ({ h, falta: (h - ahora + 1440) % 1440 })).sort((a, b) => a.falta - b.falta)[0];
+  return { dentro: false, proximo: prox.h };
+}
+const deseado = new Map(); // evento -> último estado aplicado por la programación (true = grabando)
+function aplicarProgramacion() {
+  const evs = db.prepare("SELECT * FROM eventos WHERE activo = 1 AND prog_on = 1 AND fuente IS NOT NULL AND fuente <> ''").all();
+  for (const ev of evs) {
+    const w = ventana(ev);
+    if (!w) continue;
+    if (deseado.get(ev.id) === w.dentro) continue; // solo actúa cuando entra o sale de un horario
+    deseado.set(ev.id, w.dentro);
+    const pausado = !!ev.fuente_pausa;
+    if (w.dentro && pausado) {
+      db.prepare('UPDATE eventos SET fuente_pausa = 0, fuente_pausa_desde = NULL WHERE id = ?').run(ev.id);
+      console.log('[programa] reanuda', ev.id, ev.titulo);
+    } else if (!w.dentro && !pausado) {
+      db.prepare('UPDATE eventos SET fuente_pausa = 1, fuente_pausa_desde = ? WHERE id = ?').run(Date.now(), ev.id);
+      console.log('[programa] pausa', ev.id, ev.titulo);
+    }
+    releEstado.eventos.delete(ev.id);
+  }
+}
+setInterval(aplicarProgramacion, 20000).unref();
+setTimeout(aplicarProgramacion, 5000).unref();
+
 const ESPERA_CORTE = 90; // segundos: Cloudflare cierra la grabación al minuto sin señal
+function programaHtml(ev) {
+  const w = ev.prog_on ? ventana(ev) : null;
+  const dur = Number(ev.prog_dur) || 165;
+  const info = !ev.prog_on ? '<small class="muted">Desactivada: el relé se maneja a mano con Pausar / Reanudar.</small>'
+    : !w ? '<small class="error">Revisá los horarios y la duración.</small>'
+    : w.dentro ? `<span class="pill vivo">Grabando juego de las ${hhmm(w.inicio)}</span> <small>corta solo a las <b>${hhmm(w.fin)}</b></small>`
+    : `<span class="pill">Esperando</span> <small>el próximo juego arranca solo a las <b>${hhmm(w.proximo)}</b></small>`;
+  return `<div style="margin-top:16px;padding-top:14px;border-top:1px solid rgba(255,255,255,.12)">
+      <b>Grabación programada (todos los días, hora de Argentina)</b>
+      <form method="post" action="/panel/eventos/${ev.id}/programa" style="margin-top:8px">
+        <label>Horarios de inicio</label><input name="horas" value="${esc(ev.prog_horas || '12:00, 15:00, 18:00, 21:00, 00:00')}" placeholder="12:00, 15:00, 18:00">
+        <label>Duración de cada juego (horas:minutos)</label><input name="dur" value="${hhmm(dur)}" style="max-width:140px">
+        <label class="check" style="margin-top:10px"><input type="checkbox" name="on" value="1" ${ev.prog_on ? 'checked' : ''}> Activada: el relé se reanuda y se pausa solo</label>
+        <div style="margin-top:8px"><button class="btn chico">Guardar programación</button></div>
+      </form>
+      <p style="margin:8px 0 0">${info}</p>
+      <small class="muted">Cada juego queda en su propio archivo. Dejá al menos 2 minutos libres entre el corte de un juego y el inicio del siguiente.</small>
+    </div>`;
+}
+
 function seccionRele(ev, est) {
   if (!config.relayClave) return '';
   const vivo = Date.now() - releEstado.visto < 60000;
@@ -167,6 +227,7 @@ function seccionRele(ev, est) {
         <button id="bpausa" class="btn ${ev.fuente_pausa ? '' : 'peligro'}" style="font-size:1.05rem;padding:12px 22px" ${faltan > 0 ? 'disabled' : ''}>${ev.fuente_pausa ? (faltan > 0 ? `▶ Reanudar (en ${faltan} s)` : '▶ Reanudar (empieza partido)') : '■ Pausar (termina partido)'}</button>
       </form>${faltan > 0 ? `<script>(function(){var n=${faltan},b=document.getElementById('bpausa'),f=document.getElementById('faltan');var t=setInterval(function(){n--;if(f)f.textContent=n;if(n<=0){clearInterval(t);location.reload()}else b.textContent='▶ Reanudar (en '+n+' s)'},1000)})()</script>` : ''}` : ''}
       ${estado ? `<p style="margin-bottom:0">${estado}</p>` : ''}
+      ${ev.fuente ? programaHtml(ev) : ''}
       ${releEstado.version ? `<small class="muted">Relé versión ${esc(releEstado.version)}</small>` : ''}
     </div>`;
 }
@@ -729,6 +790,23 @@ async function rutas(req, res) {
       db.prepare('UPDATE eventos SET fuente = ?, fuente_pausa = 0 WHERE id = ?').run(f || null, ev.id);
       releEstado.eventos.delete(ev.id);
       return vistaEvento(req, res, q.evento(ev.id), `<div class="okmsg">${f ? 'Guardado. En menos de un minuto el relé empieza a tomar la señal.' : 'Listo, el relé deja de tomar la señal.'}</div>`);
+    }
+    if (accion === 'programa' && req.method === 'POST') {
+      const b = await leerCuerpo(req);
+      const horas = leerHoras(b.horas);
+      const m = /^(\d{1,2}):(\d{2})$/.exec(String(b.dur || '').trim());
+      const dur = m ? Number(m[1]) * 60 + Number(m[2]) : 0;
+      if (b.on && (!horas.length || !dur)) return vistaEvento(req, res, ev, '<div class="error">Poné al menos un horario (ej. 12:00, 15:00) y la duración (ej. 2:45).</div>');
+      if (dur >= 240) return vistaEvento(req, res, ev, '<div class="error">Cada juego tiene que durar menos de 4 horas: Cloudflare no deja bajar grabaciones más largas.</div>');
+      const orden = [...new Set(horas)].sort((a, c) => a - c);
+      for (let i = 0; i < orden.length; i++) {
+        const sig = i + 1 < orden.length ? orden[i + 1] : orden[0] + 1440;
+        if (orden.length > 1 && sig - orden[i] < dur + 2) return vistaEvento(req, res, ev, `<div class="error">El juego de las ${hhmm(orden[i])} se pisa con el siguiente: dejá al menos 2 minutos entre el corte y el próximo inicio.</div>`);
+      }
+      db.prepare('UPDATE eventos SET prog_horas = ?, prog_dur = ?, prog_on = ? WHERE id = ?').run(orden.map(hhmm).join(', '), dur || 165, b.on ? 1 : 0, ev.id);
+      deseado.delete(ev.id);
+      aplicarProgramacion();
+      return vistaEvento(req, res, q.evento(ev.id), `<div class="okmsg">${b.on ? 'Programación guardada y activada.' : 'Programación desactivada.'}</div>`);
     }
     if (accion === 'pausa' && req.method === 'POST') {
       if (ev.fuente_pausa && ev.fuente_pausa_desde && Date.now() - Number(ev.fuente_pausa_desde) < ESPERA_CORTE * 1000) {
