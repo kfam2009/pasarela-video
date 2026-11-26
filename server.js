@@ -11,6 +11,7 @@ const { estadoEvento, olvidar, TEXTOS } = require('./lib/estado');
 const { pagina, reproductor, mensaje, ingresoCodigo } = require('./lib/vistas');
 const { firmar, verificar, cifrar, descifrar, sha256, esc, ahora, fechaLinda, plata } = require('./lib/util');
 const guia = require('./lib/guia');
+const tv = require('./lib/tv');
 
 /* ------------------------------------------------------------------ utilidades HTTP */
 
@@ -541,7 +542,7 @@ async function ver(req, res, t, accion) {
     const info = db.prepare(`SELECT e.titulo, c.id AS cid, c.nombre, c.sitio, (c.logo IS NOT NULL AND c.logo <> '') AS tiene_logo
         FROM eventos e JOIN clientes c ON c.id = e.cliente_id WHERE e.id = ?`).get(tk.acceso.evento_id) || {};
     const marca = info.cid ? { nombre: info.nombre, sitio: info.sitio || '', logo: info.tiene_logo ? `/logo/${info.cid}` : '' } : null;
-    return enviar(res, 200, reproductor({ token: t, hlsUrl, titulo: info.titulo, marca }), 'text/html; charset=utf-8', cabecerasReproductor(tk.acceso));
+    return enviar(res, 200, reproductor({ token: t, hlsUrl, titulo: info.titulo, marca, tvDir: config.tvDominio || `${req.headers.host}/tele` }), 'text/html; charset=utf-8', cabecerasReproductor(tk.acceso));
   }
   if (req.method !== 'POST') return json(res, 405, { error: 'Método no permitido' });
   if (tk.error) return json(res, 200, tk);
@@ -635,6 +636,7 @@ async function rutas(req, res) {
     res.writeHead(200, { 'Content-Type': 'application/javascript', 'Cache-Control': 'public, max-age=86400' });
     return fs.createReadStream(f).pipe(res);
   }
+  if (await tv.manejar(req, res, partes, { enviar, json, redirigir, leerCuerpo })) return;
   if (p === '/') {
     if (esAdmin(req)) return redirigir(res, '/panel');
     return enviar(res, 200, pagina({ titulo: 'Inicio', cuerpo: `<h1>${esc(config.marca)}</h1><p class="sub">Transmisiones privadas para plataformas de venta de entradas.</p><p><a class="btn" href="/panel/login">Ingresar</a> <a class="btn sec" href="/integracion">Guía de integración</a></p>` }));
