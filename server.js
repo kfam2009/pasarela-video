@@ -187,7 +187,7 @@ function programaHtml(ev) {
         <div style="margin-top:8px"><button class="btn chico">Guardar programación</button></div>
       </form>
       <p style="margin:8px 0 0">${info}</p>
-      <small class="muted">Cada juego queda en su propio archivo. Dejá al menos 2 minutos libres entre el corte de un juego y el inicio del siguiente.</small>
+      <small class="muted">Cada juego queda en su propio archivo. Dejá al menos 2 minutos libres entre el corte de un juego y el inicio del siguiente.${ev.prog_on && config.r2Listo() ? '<br><b>Pase automático a R2:</b> unos minutos después de cada corte, el juego se copia a R2 y se borra de Stream, así el espacio de Cloudflare no se llena.' : ''}</small>
     </div>`;
 }
 
